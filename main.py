@@ -122,17 +122,17 @@ def visualize_network(G, es, ef, ls, lf, critical_paths, levels, title=None):
             table_bg = 'white'
             border_color = 'black'
         label = f'''<
-        <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="0" ALIGN="CENTER" BGCOLOR="{table_bg}">
+        <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="0" ALIGN="CENTER" BGCOLOR="{table_bg}" STYLE="font-size:10px;">
           <TR>
-            <TD FIXEDSIZE="TRUE" WIDTH="40" HEIGHT="20" ALIGN="CENTER" VALIGN="MIDDLE">{es[n]}</TD>
-            <TD FIXEDSIZE="TRUE" WIDTH="40" HEIGHT="20" ALIGN="CENTER" VALIGN="MIDDLE">{ef[n]}</TD>
+            <TD FIXEDSIZE="TRUE" WIDTH="60" HEIGHT="20" ALIGN="CENTER" VALIGN="MIDDLE" STYLE="font-size:10px;">{es[n]}</TD>
+            <TD FIXEDSIZE="TRUE" WIDTH="60" HEIGHT="20" ALIGN="CENTER" VALIGN="MIDDLE" STYLE="font-size:10px;">{ef[n]}</TD>
           </TR>
           <TR>
-            <TD COLSPAN="2" FIXEDSIZE="TRUE" WIDTH="80" HEIGHT="24" ALIGN="CENTER" VALIGN="MIDDLE"><B>{G.nodes[n]['name']}({G.nodes[n]['duration']})</B></TD>
+            <TD COLSPAN="2" FIXEDSIZE="TRUE" WIDTH="120" HEIGHT="25" ALIGN="CENTER" VALIGN="MIDDLE" STYLE="font-size:12px; text-align:left;"><B>{G.nodes[n]['name']}({G.nodes[n]['duration']})</B></TD>
           </TR>
           <TR>
-            <TD FIXEDSIZE="TRUE" WIDTH="40" HEIGHT="20" ALIGN="CENTER" VALIGN="MIDDLE">{ls[n]}</TD>
-            <TD FIXEDSIZE="TRUE" WIDTH="40" HEIGHT="20" ALIGN="CENTER" VALIGN="MIDDLE">{lf[n]}</TD>
+            <TD FIXEDSIZE="TRUE" WIDTH="60" HEIGHT="20" ALIGN="CENTER" VALIGN="MIDDLE" STYLE="font-size:10px;">{ls[n]}</TD>
+            <TD FIXEDSIZE="TRUE" WIDTH="60" HEIGHT="20" ALIGN="CENTER" VALIGN="MIDDLE" STYLE="font-size:10px;">{lf[n]}</TD>
           </TR>
         </TABLE>
         >'''
@@ -165,6 +165,10 @@ uploaded_file = st.file_uploader(
     type=["xlsx", "xls"]
 )
 
+# 계약금 및 지체 상금 퍼센트 입력 UI 추가
+contract_amount = st.number_input("계약금을 입력하세요 (원)", min_value=0, value=0, step=1000000, format="%d")
+liquidated_damages_percent = st.number_input("지체상금에 대한 퍼센트를 입력하세요 (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, format="%f")
+
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
     df["ID"] = df["ID"].astype(str)
@@ -182,7 +186,7 @@ if uploaded_file:
 
     st.subheader("지연 시뮬레이션")
     selected_task = st.selectbox("지연 공정을 선택하세요", df["ID"])
-    delay_days = st.number_input("지연 일수 입력", min_value=1, max_value=30, value=3)
+    delay_days = st.number_input("지연 일수 입력", min_value=1, max_value=1000, value=3)
     delay_cost = G.nodes[selected_task]["delay_cost"] * delay_days
 
     if st.button("지연 반영하여 네트워크 재계산/시각화"):
@@ -215,5 +219,160 @@ if uploaded_file:
             min_reducible_days = min(reducible_days_list) if reducible_days_list else 0
             X = min(delay_days_total, min_reducible_days)
             st.write(f"단축 가능 최대 일수: {X}일 (지연일수: {delay_days_total}일, 모든 CP별 단축 가능 일수: {reducible_days_list})")
+            
+            # 단축 시나리오 계산 및 표시
+            st.subheader("단축 시나리오 분석")
+            
+            # 각 CP 경로에서 단축 가능한 공정들을 찾기
+            def find_reducible_tasks_in_paths():
+                reducible_tasks = {}
+                for path in critical_paths_sim:
+                    if selected_task in path:
+                        idx = path.index(selected_task)
+                        after_nodes = path[idx+1:]
+                    else:
+                        after_nodes = path
+                    
+                    for node in after_nodes:
+                        if G_sim.nodes[node]['max_reduction'] > 0:
+                            if node not in reducible_tasks:
+                                reducible_tasks[node] = {
+                                    'name': G_sim.nodes[node]['name'],
+                                    'max_reduction': G_sim.nodes[node]['max_reduction'],
+                                    'reduction_cost': G_sim.nodes[node]['reduction_cost'],
+                                    'current_duration': G_sim.nodes[node]['duration']
+                                }
+                return reducible_tasks
+            
+            reducible_tasks = find_reducible_tasks_in_paths()
+            
+            # 각 시나리오별 단축 계획 계산
+            scenarios = []
+            for reduction_days in range(0, X + 1):
+                remaining_days = reduction_days
+                scenario_tasks = []
+                total_cost = 0
+                
+                # 비용 효율성 순으로 정렬 (단축단가가 낮은 순)
+                sorted_tasks = sorted(reducible_tasks.items(), 
+                                    key=lambda x: x[1]['reduction_cost'])
+                
+                for task_id, task_info in sorted_tasks:
+                    if remaining_days <= 0:
+                        break
+                    
+                    # 이 공정에서 단축할 수 있는 일수
+                    task_reduction = min(remaining_days, task_info['max_reduction'])
+                    
+                    if task_reduction > 0:
+                        task_cost = task_reduction * task_info['reduction_cost']
+                        scenario_tasks.append({
+                            'task_id': task_id,
+                            'task_name': task_info['name'],
+                            'reduction_days': task_reduction,
+                            'reduction_cost_per_day': task_info['reduction_cost'],
+                            'total_cost': task_cost
+                        })
+                        total_cost += task_cost
+                        remaining_days -= task_reduction
+                
+                # 지연된 공정의 연장 비용 계산
+                delay_cost = G_sim.nodes[selected_task]['delay_cost'] * delay_days
+                
+                # 총 지연된 공사일수 계산 (지연일수 - 단축일수)
+                total_delay_days = delay_days_total - reduction_days
+                
+                # 지체상금 계산 (계약금 × 지체상금 퍼센트 × 총 지연일수)
+                liquidated_damages = contract_amount * (liquidated_damages_percent / 100) * total_delay_days
+                
+                # 최종 총 비용 계산 (단축비용 + 연장비용 + 지체상금)
+                total_cost_with_delay = total_cost + delay_cost + liquidated_damages
+                
+                scenarios.append({
+                    'reduction_days': reduction_days,
+                    'tasks': scenario_tasks,
+                    'total_cost': total_cost,
+                    'delay_cost': delay_cost,
+                    'total_delay_days': total_delay_days,
+                    'liquidated_damages': liquidated_damages,
+                    'total_cost_with_delay': total_cost_with_delay
+                })
+            
+            # 시나리오 비교표 및 최적 시나리오 추천 추가
+            best_scenario = min(scenarios, key=lambda x: x['total_cost_with_delay'])
+            best_cost = best_scenario['total_cost_with_delay']
+            st.subheader("시나리오 비교표")
+            summary_data = []
+            for scenario in scenarios:
+                summary_data.append({
+                    '단축일수': f"{scenario['reduction_days']}일",
+                    '단축비용': f"{scenario['total_cost']:,}원",
+                    '연장비용': f"{scenario['delay_cost']:,}원",
+                    '총지연일수': f"{scenario['total_delay_days']}일",
+                    '지체상금': f"{scenario['liquidated_damages']:,}원",
+                    '최종총비용': f"{scenario['total_cost_with_delay']:,}원",
+                    '정렬용비용': scenario['total_cost_with_delay']  # 정렬을 위한 숫자 값
+                })
+            summary_df = pd.DataFrame(summary_data)
+            # 최종 총 비용이 적은 순으로 정렬
+            summary_df = summary_df.sort_values('정렬용비용')
+            # 정렬용 컬럼 제거
+            summary_df = summary_df.drop('정렬용비용', axis=1)
+            
+            # 추천 시나리오 행 강조를 위한 스타일링
+            def highlight_recommended(row):
+                # 최저 비용인 행을 찾아서 강조
+                min_cost = min(scenarios, key=lambda x: x['total_cost_with_delay'])['total_cost_with_delay']
+                try:
+                    current_cost = float(row['최종총비용'].replace('원', '').replace(',', ''))
+                except Exception:
+                    return [''] * len(row)
+                if current_cost == min_cost:
+                    return ['background-color: lightgreen; color: black'] * len(row)
+                return [''] * len(row)
+            
+            styled_df = summary_df.style.apply(highlight_recommended, axis=1)
+            st.dataframe(styled_df, use_container_width=True)
+            
+            # 최적 시나리오 추천 및 단축 공정표 표시
+            st.subheader("최적 시나리오 추천")
+            st.success(f"**추천: {best_scenario['reduction_days']}일 단축 시나리오**")
+            st.write(f"최종 총 비용: **{best_scenario['total_cost_with_delay']:,}원** (단축: {best_scenario['total_cost']:,}원, 지연연장: {best_scenario['delay_cost']:,}원, 지체상금: {best_scenario['liquidated_damages']:,}원)")
+            
+            if best_scenario['tasks']:
+                st.subheader("최적 시나리오 단축 공정표")
+                best_scenario_data = []
+                for task in best_scenario['tasks']:
+                    best_scenario_data.append({
+                        '공정ID': task['task_id'],
+                        '공정명': task['task_name'],
+                        '단축일수': task['reduction_days'],
+                        '단축단가(원/일)': task['reduction_cost_per_day'],
+                        '총비용(원)': task['total_cost']
+                    })
+                best_scenario_df = pd.DataFrame(best_scenario_data)
+                st.dataframe(best_scenario_df, use_container_width=True)
+            else:
+                st.write("단축할 공정이 없습니다.")
+            
+            st.write("---")
+            # 이하 기존 상세 시나리오 표시는 그대로 유지
+            for scenario in scenarios:
+                with st.expander(f"시나리오 {scenario['reduction_days']}일 단축 (총 지연일수: {scenario['total_delay_days']}일) - 최종 총 비용: {scenario['total_cost_with_delay']:,}원"):
+                    st.write(f"**최종 총 비용: {scenario['total_cost_with_delay']:,}원** (단축: {scenario['total_cost']:,}원, 지연연장: {scenario['delay_cost']:,}원, 지체상금: {scenario['liquidated_damages']:,}원)")
+                    if scenario['tasks']:
+                        scenario_data = []
+                        for task in scenario['tasks']:
+                            scenario_data.append({
+                                '공정ID': task['task_id'],
+                                '공정명': task['task_name'],
+                                '단축일수': task['reduction_days'],
+                                '단축단가(원/일)': task['reduction_cost_per_day'],
+                                '총비용(원)': task['total_cost']
+                            })
+                        scenario_df = pd.DataFrame(scenario_data)
+                        st.dataframe(scenario_df, use_container_width=True)
+                    else:
+                        st.write("단축할 공정이 없습니다.")
         else:
             st.write("지연이 발생하지 않았으므로, 단축 시나리오가 필요하지 않습니다.")
