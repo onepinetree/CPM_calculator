@@ -54,13 +54,13 @@ def build_network(df):
     return G
 
 def compute_cpm(G):
-    """CPM 계산 - 이른/늦은 시간, 여유시간, 주경로"""
+    """CPM 계산 - 이른/늦은 시간, 여유시간, 주공정"""
     es, ef = compute_es_ef(G)
     ls, lf = compute_ls_lf(G, ef)
     float_ = compute_float(es, ls)
     
     def find_critical_paths(G, es, ls):
-        """주경로 찾기"""
+        """주공정 찾기"""
         start_nodes = [n for n in G.nodes if G.in_degree[n] == 0]
         end_nodes = [n for n in G.nodes if G.out_degree[n] == 0]
         critical_paths = []
@@ -183,7 +183,7 @@ def get_after_delay_nodes(critical_paths, selected_tasks):
     return after_nodes_list
 
 def get_all_critical_nodes(critical_paths):
-    """주경로의 모든 공정들 찾기"""
+    """주공정의 모든 공정들 찾기"""
     all_nodes = set()
     for path in critical_paths:
         all_nodes.update(path)
@@ -197,7 +197,7 @@ def find_reducible_tasks(G, critical_paths, selected_tasks, reduction_scope="aft
         # 지연된 공정 이후의 공정들만 대상
         target_nodes_list = get_after_delay_nodes(critical_paths, selected_tasks)
     elif reduction_scope == "all_critical":
-        # 주경로의 모든 공정 대상
+        # 주공정의 모든 공정 대상
         target_nodes_list = [get_all_critical_nodes(critical_paths)]
     else:
         # 기본값: 지연된 공정 이후의 공정들만
@@ -261,7 +261,7 @@ def calculate_scenario_costs(reduction_days, reducible_tasks, delay_info, G, del
 
 def display_scenario_tasks(scenario, title):
     """시나리오 상세 정보 표시"""
-    st.write(f"**최종 총 비용: {scenario['total_cost_with_delay']:,}원** (단축: {scenario['total_cost']:,}원, 지연연장: {scenario['delay_cost']:,}원, 지체상금: {scenario['liquidated_damages']:,}원)")
+    st.write(f"**총 비용: {scenario['total_cost_with_delay']:,}원** (단축: {scenario['total_cost']:,}원, 지연연장: {scenario['delay_cost']:,}원, 지체상금: {scenario['liquidated_damages']:,}원)")
     if scenario['tasks']:
         st.subheader(title)
         task_data = []
@@ -307,33 +307,37 @@ def create_summary_dataframe(scenarios, best_scenario):
     return styled_df
 
 uploaded_file = st.file_uploader(
-    "엑셀 공정표를 업로드하세요\n(필수 컬럼: ID, 공정명, 선행ID, 기간, 최소공사일, 단축 단가 (원/일), 연장 단가 (원/일))",
+    "엑셀을 업로드하세요.\n(필수 컬럼: ID, 공정명, 선행ID, 기간, 최소공사일, 단축 단가 (원/일), 연장 단가 (원/일))",
     type=["xlsx", "xls"]
 )
 
-contract_amount = st.number_input("계약금을 입력하세요 (원)", min_value=0, value=0, step=1000000, format="%d")
-liquidated_damages_percent = st.number_input("지체상금에 대한 퍼센트를 입력하세요 (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, format="%f")
+# 계약금과 지체상금 입력 필드를 2열로 배치
+col1, col2 = st.columns(2)
+with col1:
+    contract_amount = st.number_input("계약금을 입력하세요. (원)", min_value=0, value=0, step=1000000, format="%d")
+with col2:
+    liquidated_damages_percent = st.number_input("지체상금에 대한 비율을을 입력하세요. (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1, format="%f")
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
     df["ID"] = df["ID"].astype(str)
     df["선행ID"] = df["선행ID"].astype(str)
     df["단축 가능 일수"] = df["기간"] - df["최소공사일"]
-    st.write("업로드된 공정표:")
+    st.write("업로드된 데이터:")
     st.dataframe(df)
 
-    G, es, ef, ls, lf, float_, critical_paths, levels = analyze_and_visualize_network(df, "AON 네트워크")
+    G, es, ef, ls, lf, float_, critical_paths, levels = analyze_and_visualize_network(df, "AON 네트워크 공정표")
 
     st.subheader("지연 시뮬레이션")
-    selected_tasks = st.multiselect("지연 공정을 선택하세요 (여러 개 선택 가능)", df["ID"])
+    selected_tasks = st.multiselect("지연 공정을 선택하세요. (여러 개 선택 가능)", df["ID"])
 
     delay_info = {}
     if selected_tasks:
-        st.write("각 공정별 지연일수를 입력하세요:")
+        st.write("각 공정별 지연일수를 입력하세요.:")
         for task_id in selected_tasks:
             task_name = df.loc[df["ID"] == task_id, "공정명"].iloc[0]
             delay_days = st.number_input(
-                f"{task_id} - {task_name} 지연일수", 
+                f"{task_id} - {task_name}", 
                 min_value=0, 
                 max_value=1000, 
                 value=3,
@@ -344,7 +348,7 @@ if uploaded_file:
     # 단축 대상 범위 선택 (항상 노출)
     reduction_options = [
         ("after_delay", "지연된 공정 이후의 공정들만"),
-        ("all_critical", "주경로의 모든 공정")
+        ("all_critical", "주공정의 모든 공정")
     ]
     reduction_scope = st.selectbox(
         "단축 대상 범위 선택",
@@ -354,8 +358,11 @@ if uploaded_file:
         key="reduction_scope"
     )[0]
 
-    # 시뮬레이션 실행 조건: 지연 공정 선택 + delay_info 입력
-    if selected_tasks and any(delay_info.values()):
+    # 시뮬레이션 실행 버튼 추가
+    run_simulation = st.button("시뮬레이션 실행")
+
+    # 시뮬레이션 실행 조건: 버튼 클릭 + 지연 공정 선택 + delay_info 입력
+    if run_simulation and selected_tasks and any(delay_info.values()):
         df_sim = df.copy()
         for task_id, delay_days in delay_info.items():
             if delay_days > 0:
@@ -363,7 +370,7 @@ if uploaded_file:
         df_sim["단축 가능 일수"] = df_sim["기간"] - df_sim["최소공사일"]
 
         G_sim, es_sim, ef_sim, ls_sim, lf_sim, float_sim, critical_paths_sim, levels_sim = analyze_and_visualize_network(
-            df_sim, "지연 반영된 AON 네트워크 (시뮬레이션 결과)", is_simulation=True
+            df_sim, "반영된 AON 네트워크 공정표", is_simulation=True
         )
 
         total_duration_before = max(ef.values())
@@ -380,12 +387,12 @@ if uploaded_file:
             else:  # all_critical
                 all_critical_nodes = get_all_critical_nodes(critical_paths_sim)
                 reducible_days_list = [sum([G_sim.nodes[n]['max_reduction'] for n in all_critical_nodes])]
-                scope_description = "주경로의 모든 공정"
+                scope_description = "주공정의 모든 공정"
 
             min_reducible_days = min(reducible_days_list) if reducible_days_list else 0
             X = min(delay_days_total, min_reducible_days)
             st.write(f"단축 대상: {scope_description}")
-            st.write(f"단축 가능 최대 일수: {X}일 (지연일수: {delay_days_total}일, 모든 CP별 단축 가능 일수: {reducible_days_list})")
+            st.write(f"단축 가능 최대 일수: {X}일 (지연일수: {delay_days_total}일, 모든 주공정별 단축 가능 일수: {', '.join(str(x) for x in reducible_days_list)})")
 
             st.subheader("단축 시나리오 분석")
 
@@ -405,16 +412,15 @@ if uploaded_file:
             styled_df = create_summary_dataframe(scenarios, best_scenario)
             st.dataframe(styled_df, use_container_width=True)
 
-            st.subheader("최적 시나리오 추천")
             st.success(f"**추천: {best_scenario['reduction_days']}일 단축 시나리오**")
             display_scenario_tasks(best_scenario, "최적 시나리오 단축 공정표")
 
             st.write("---")
 
             for scenario in scenarios:
-                with st.expander(f"시나리오 {scenario['reduction_days']}일 단축 (총 지연일수: {scenario['total_delay_days']}일) - 최종 총 비용: {scenario['total_cost_with_delay']:,}원"):
+                with st.expander(f"시나리오 {scenario['reduction_days']}일 단축 (총 지연일수: {scenario['total_delay_days']}일) - 총 비용: {scenario['total_cost_with_delay']:,}원"):
                     display_scenario_tasks(scenario, "단축 공정표")
         else:
             st.write("지연이 발생하지 않았으므로, 단축 시나리오가 필요하지 않습니다.")
-    else:
-        st.info("지연 공정과 지연일수를 모두 입력하면 시뮬레이션 결과가 자동으로 표시됩니다.")
+    elif run_simulation:
+        st.info("지연 공정과 지연일수를 모두 입력해야 시뮬레이션이 실행됩니다.")
